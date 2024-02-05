@@ -1,14 +1,17 @@
 import os
+import string
+import secrets
 from pathlib import Path
 
 import pytest
+from faker import Faker
 from sqlalchemy import exists
 from paralympics import create_app, db
-from paralympics.models import Region
+from paralympics.models import Region, User
 from paralympics.schemas import RegionSchema
 
 
-@pytest.fixture(scope='module')
+@pytest.fixture(scope='session')
 def app():
     """Fixture that creates a test app.
 
@@ -25,6 +28,7 @@ def app():
     test_cfg = {
         "TESTING": True,
         "SQLALCHEMY_DATABASE_URI": "sqlite:///" + str(db_path),
+        # "SQLALCHEMY_ECHO": True
     }
     app = create_app(test_config=test_cfg)
 
@@ -39,6 +43,18 @@ def app():
 @pytest.fixture()
 def client(app):
     return app.test_client()
+
+
+# This is an alternative to the client fixtures above, do not add this as well as the client fixture but use it
+# as a replacement!
+# From Patrick Kennedy: https://gitlab.com/patkennedy79/flask_user_management_example/-/blob/main/tests/conftest.py
+@pytest.fixture(scope='module')
+def test_client(app):
+    # Create a test client using the Flask application configured for testing
+    with app.test_client() as testing_client:
+        # Establish an application context
+        with app.app_context():
+            yield testing_client  # this is where the testing happens!
 
 
 @pytest.fixture(scope='function')

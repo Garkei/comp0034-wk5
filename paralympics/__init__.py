@@ -1,8 +1,6 @@
 import os
-from pathlib import Path
 
-import csv
-from flask import Flask
+from flask import Flask, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_marshmallow import Marshmallow
 from sqlalchemy.orm import DeclarativeBase
@@ -11,6 +9,19 @@ from sqlalchemy.orm import DeclarativeBase
 # https://flask-sqlalchemy.palletsprojects.com/en/3.1.x/quickstart/
 class Base(DeclarativeBase):
     pass
+
+
+def handle_404_error(e):
+    """ Error handler for 404.
+
+        Used when abort() is called. THe custom message is provided by the 'description=' parameter in abort().
+        Args:
+            HTTP 404 error
+
+        Returns:
+            JSON response with the validation error message and the 404 status code
+        """
+    return jsonify(error=str(e)), 404
 
 
 # First create the db object using the SQLAlchemy constructor.
@@ -25,11 +36,12 @@ ma = Marshmallow()
 def create_app(test_config=None):
     # create and configure the app
     app = Flask('paralympics', instance_relative_config=True)
+
     app.config.from_mapping(
         # Generate your own SECRET_KEY using python secrets
         SECRET_KEY='l-tirPCf1S44mWAGoWqWlA',
         # configure the SQLite database, relative to the app instance folder
-        SQLALCHEMY_DATABASE_URI="sqlite:///" + os.path.join(app.instance_path, 'paralympics.sqlite'),
+        SQLALCHEMY_DATABASE_URI="sqlite:///" + os.path.join(app.instance_path, 'paralympics.sqlite')
     )
 
     if test_config is None:
@@ -44,6 +56,13 @@ def create_app(test_config=None):
         os.makedirs(app.instance_path)
     except OSError:
         pass
+
+    # Configure logging
+    from paralympics.database_utils import configure_logging
+    configure_logging(app)
+
+    # Register the custom 404 error handler that is defined in this python file
+    app.register_error_handler(401, handle_404_error)
 
     # Initialise Flask with the SQLAlchemy database extension
     db.init_app(app)
@@ -62,8 +81,7 @@ def create_app(test_config=None):
         from paralympics.database_utils import add_data
         add_data(db)
 
-        # Register the routes with the app in the context
-        from paralympics import routes
+        # Register the routes and custom error handlers with the app in the context
+        from paralympics import routes, error_handlers
 
     return app
-

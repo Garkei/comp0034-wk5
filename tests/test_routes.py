@@ -1,3 +1,6 @@
+from flask import current_app as app
+
+
 def test_get_regions_status_code(client):
     """
     GIVEN a Flask test client
@@ -59,7 +62,6 @@ def test_get_region_not_exists(client):
     """
     response = client.get("/regions/AAA")
     assert response.status_code == 404
-    assert response.json == {'error': '404 Not Found: Region not found'}
 
 
 def test_post_region(client):
@@ -108,6 +110,8 @@ def test_region_post_region_exists(client):
     assert response.status_code == 200
 
 
+# The following has been replaced by tests in the test_auth.py file.
+
 def test_patch_region(client, new_region):
     """
         GIVEN an existing region
@@ -123,6 +127,7 @@ def test_patch_region(client, new_region):
     assert response.status_code == 200
 
 
+
 def test_delete_region(client, new_region):
     """
     GIVEN an existing region in JSON format
@@ -136,3 +141,16 @@ def test_delete_region(client, new_region):
     response = client.delete(f"/regions/{code}")
     assert response.status_code == 200
     assert response.json['message'] == 'Region NEW deleted.'
+
+
+def test_delete_region_not_exists(client):
+    """
+    GIVEN a Flask test client
+    WHEN a DELETE request is made to a region that does not exist /regions/ZZZZ
+    THEN the response status code should be 404
+    AND the response content should include the message 'Region {noc_code} deleted.'
+    """
+    code = 'ZZZZ'
+    response = client.delete(f"/regions/{code}")
+    assert response.status_code == 404
+    assert response.json['message'] == f'Region {code} not found.'

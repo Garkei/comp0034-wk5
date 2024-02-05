@@ -1,6 +1,9 @@
-from flask import current_app as app, request, abort, jsonify
-from marshmallow.exceptions import ValidationError
+from datetime import datetime
+
+from flask import current_app as app, request, abort, jsonify, make_response
 from sqlalchemy import exc
+from marshmallow.exceptions import ValidationError
+
 from paralympics import db
 from paralympics.models import Region, Event
 from paralympics.schemas import RegionSchema, EventSchema
@@ -12,47 +15,30 @@ events_schema = EventSchema(many=True)
 event_schema = EventSchema()
 
 
-# Error handlers
-@app.errorhandler(ValidationError)
-def register_validation_error(error):
-    """ Error handler for marshmallow schema validation errors.
-
-    Args:
-        error (ValidationError): Marshmallow error.
-
-    Returns:
-        HTTP response with the validation error message and the 400 status code
-    """
-    response = error.messages
-    return response, 400
-
-
-@app.errorhandler(404)
-def resource_not_found(e):
-    """ Error handler for 404.
-
-        Args:
-            HTTP 404 error
-
-        Returns:
-            JSON response with the validation error message and the 404 status code
-        """
-    return jsonify(error=str(e)), 404
-
-
+# REGION ROUTES
 @app.get("/regions")
 def get_regions():
     """Returns a list of NOC region codes and their details in JSON.
 
     Returns:
-        JSON for all the regions
+        JSON for all the regions, or 500 error if not found
     """
-    # Select all the regions using Flask-SQLAlchemy
-    all_regions = db.session.execute(db.select(Region)).scalars()
-    # Dump the data using the Marshmallow regions schema; '.dump()' returns JSON.
-    result = regions_schema.dump(all_regions)
-    # Return the data in the HTTP response
-    return result
+    try:
+        # Select all the regions using Flask-SQLAlchemy
+        all_regions = db.session.execute(db.select(Region)).scalars()
+        # Dump the data using the Marshmallow regions schema; '.dump()' returns JSON.
+        try:
+            result = regions_schema.dump(all_regions)
+            # If all OK then return the data in the HTTP response
+            return result
+        except ValidationError as e:
+            app.logger.error(f"A Marshmallow ValidationError occurred dumping all regions: {str(e)}")
+            msg = {'message': "An Internal Server Error occurred."}
+            return make_response(msg, 500)
+    except exc.SQLAlchemyError as e:
+        app.logger.error(f"An error occurred while fetching regions: {str(e)}")
+        msg = {'message': "An Internal Server Error occurred."}
+        return make_response(msg, 500)
 
 
 @app.get('/regions/<code>')
@@ -77,14 +63,117 @@ def get_region(code):
         return result
     except exc.NoResultFound as e:
         # See https://flask.palletsprojects.com/en/2.3.x/errorhandling/#returning-api-errors-as-json
+        app.logger.error(f'Region code {code} was not found. Error: {e}')
         abort(404, description="Region not found")
 
 
+@app.post('/regions')
+def add_region():
+    """ Adds a new region.
+
+    Gets the JSON data from the request body and uses this to deserialise JSON to an object using Marshmallow
+   region_schema.loads()
+
+    Returns: 
+        JSON message  If there is an error, return 400if the issue is with the validation, 500 if there is a
+        database issue, otherwise return message 'Region added with NOC= {region.NOC}'
+    """
+    json_data = request.get_json()
+    try:
+        region = region_schema.load(json_data)
+
+        try:
+            db.session.add(region)
+            db.session.commit()
+            return {"message": f"Region added with NOC= {region.NOC}"}
+        except exc.SQLAlchemyError as e:
+            app.logger.error(f"An error occurred saving the Region: {str(e)}")
+            msg = {'message': "An Internal Server Error occurred."}
+            return make_response(msg, 500)
+
+    except ValidationError as e:
+        app.logger.error(f"A Marshmallow ValidationError loading the region: {str(e)}")
+        msg = {'message': "The Region details failed validation."}
+        return make_response(msg, 400)
+
+
+@app.delete('/regions/<noc_code>')
+def delete_region(noc_code):
+    """ Deletes the region with the given code.
+
+    Args:
+        param code (str): The 3-character NOC code of the region to delete
+    Returns:
+        JSON If successful, return success message, other return 500 Internal Server Error
+    """
+    try:
+        region = db.session.execute(db.select(Region).filter_by(NOC=noc_code)).scalar_one()
+        db.session.delete(region)
+        db.session.commit()
+        return {"message": f"Region {noc_code} deleted."}
+    except exc.SQLAlchemyError as e:
+        # Log the exception with the error
+        app.logger.error(f"A SQLAlchemy database error occurred: {str(e)}")
+        # Report a 404 error to the user who made the request
+        msg_content = f'Region {noc_code} not found.'
+        msg = {'message': msg_content}
+        return make_response(msg, 404)
+
+
+@app.patch("/regions/<noc_code>")
+def update_region(noc_code):
+    """Updates changed fields for the specified region.
+
+    Args:
+        noc_code (str): 3 character NOC region code
+
+    Returns:
+        JSON message
+            If the region for the code is not found, return 404
+            If the JSON contents are not valid, return 500
+            If the update is not saved, return 500
+            If all OK then return 200
+    """
+    app.logger.error(f"Started the patch")
+    # Find the region in the database
+    try:
+        existing_region = db.session.execute(
+            db.select(Region).filter_by(NOC=noc_code)
+        ).scalar_one_or_none()
+    except exc.SQLAlchemyError as e:
+        app.logger.error(f"A SQLAlchemy database error occurred: {str(e)}")
+        msg_content = f'Region {noc_code} not found'
+        msg = {'message': msg_content}
+        return make_response(msg, 404)
+    # Get the updated details from the json sent in the HTTP patch request
+    region_json = request.get_json()
+    app.logger.error(f"region_json: {str(region_json)}")
+    # Use Marshmallow to update the existing records with the changes from the json
+    try:
+        region_update = region_schema.load(region_json, instance=existing_region, partial=True)
+    except ValidationError as e:
+        app.logger.error(f"A Marshmallow schema validation error occurred: {str(e)}")
+        msg = f'Failed Marshmallow schema validation'
+        return make_response(msg, 500)
+    # Commit the changes to the database
+    try:
+        db.session.add(region_update)
+        db.session.commit()
+        # Return json message
+        response = {"message": f"Region {noc_code} updated."}
+        return response
+    except exc.SQLAlchemyError as e:
+        app.logger.error(f"A SQLAlchemy database error occurred: {str(e)}")
+        msg = f'An Internal Server Error occurred.'
+        return make_response(msg, 500)
+
+
+# EVENT ROUTES
 @app.get("/events")
 def get_events():
     """Returns a list of events and their details in JSON.
 
-    Returns: 
+    Returns:
         JSON for all events
     """
     all_events = db.session.execute(db.select(Event)).scalars()
@@ -113,7 +202,7 @@ def add_event():
    Gets the JSON data from the request body and uses this to deserialise JSON to an object using Marshmallow
    event_schema.loads()
 
-   Returns: 
+   Returns:
         JSON
    """
     ev_json = request.get_json()
@@ -121,23 +210,6 @@ def add_event():
     db.session.add(event)
     db.session.commit()
     return {"message": f"Event added with id= {event.id}"}
-
-
-@app.post('/regions')
-def add_region():
-    """ Adds a new region.
-
-    Gets the JSON data from the request body and uses this to deserialise JSON to an object using Marshmallow
-   region_schema.loads()
-
-    Returns: 
-        JSON
-    """
-    json_data = request.get_json()
-    region = region_schema.load(json_data)
-    db.session.add(region)
-    db.session.commit()
-    return {"message": f"Region added with NOC= {region.NOC}"}
 
 
 @app.delete('/events/<int:event_id>')
@@ -155,27 +227,9 @@ def delete_event(event_id):
     return {"message": f"Event {event_id} deleted."}
 
 
-@app.delete('/regions/<noc_code>')
-def delete_region(noc_code):
-    """ Deletes the region with the given code.
-
-    Args:
-        param code (str): The 3-character NOC code of the region to delete
-    Returns:
-        JSON
-    """
-    region = db.session.execute(db.select(Region).filter_by(NOC=noc_code)).scalar_one()
-    if region:
-        db.session.delete(region)
-        db.session.commit()
-        return {"message": f"Region {noc_code} deleted."}
-    else:
-        abort(404, description="Region not found")
-
-
 @app.patch("/events/<event_id>")
 def event_update(event_id):
-    """ Updates changed fields for the specified event.
+    """ Update fields for the specified event.
     
     Returns:
         JSON message
@@ -187,36 +241,10 @@ def event_update(event_id):
     # Get the updated details from the json sent in the HTTP patch request
     event_json = request.get_json()
     # Use Marshmallow to update the existing records with the changes from the json
-    event_update = event_schema.load(event_json, instance=existing_event, partial=True)
+    event_updated = event_schema.load(event_json, instance=existing_event, partial=True)
     # Commit the changes to the database
-    db.session.add(event_update)
+    db.session.add(event_updated)
     db.session.commit()
     # Return json success message
     response = {"message": f"Event with id={event_id} updated."}
-    return response
-
-
-@app.patch("/regions/<noc_code>")
-def region_update(noc_code):
-    """Updates changed fields for the specified region.
-    
-    Args:
-        noc_code (str): 3 character NOC region code
-
-    Returns:
-        JSON message
-    """
-    # Find the region in the database
-    existing_region = db.session.execute(
-        db.select(Region).filter_by(NOC=noc_code)
-    ).scalar_one_or_none()
-    # Get the updated details from the json sent in the HTTP patch request
-    region_json = request.get_json()
-    # Use Marshmallow to update the existing records with the changes from the json
-    region_update = region_schema.load(region_json, instance=existing_region, partial=True)
-    # Commit the changes to the database
-    db.session.add(region_update)
-    db.session.commit()
-    # Return json message
-    response = {"message": f"Region {noc_code} updated."}
     return response
